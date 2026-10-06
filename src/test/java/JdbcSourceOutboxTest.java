@@ -1,6 +1,5 @@
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,7 +23,6 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,8 +51,7 @@ class JdbcSourceOutboxTest {
             .withCopyFileToContainer(MountableFile.forHostPath("schema.sql"), "/docker-entrypoint-initdb.d/schema.sql");
 
     static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.3.1")
-            .withNetwork(NET).withNetworkAliases("kafka").withListener("kafka:19092")
-            .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
+            .withNetwork(NET).withNetworkAliases("kafka").withListener("kafka:19092");
 
     // The Debezium image is just a convenient Kafka Connect; the JDBC plugin is mounted in.
     static final GenericContainer<?> CONNECT = new GenericContainer<>("quay.io/debezium/connect:3.3.2.Final")
@@ -65,9 +62,6 @@ class JdbcSourceOutboxTest {
                     "CONFIG_STORAGE_TOPIC", "connect_configs",
                     "OFFSET_STORAGE_TOPIC", "connect_offsets",
                     "STATUS_STORAGE_TOPIC", "connect_statuses",
-                    "CONFIG_STORAGE_REPLICATION_FACTOR", "1",
-                    "OFFSET_STORAGE_REPLICATION_FACTOR", "1",
-                    "STATUS_STORAGE_REPLICATION_FACTOR", "1",
                     "OFFSET_FLUSH_INTERVAL_MS", "1000")) // default 60 s; the test wants to read the stored offset
             .withFileSystemBind(PLUGIN.toAbsolutePath().toString(), "/kafka/connect/kafka-connect-jdbc")
             .withExposedPorts(8083)
@@ -84,13 +78,6 @@ class JdbcSourceOutboxTest {
         }
         db = connect();
         registerConnector();
-    }
-
-    @AfterAll
-    static void stop() {
-        CONNECT.stop();
-        KAFKA.stop();
-        POSTGRES.stop();
     }
 
     /// The easy case works, which is what makes this connector tempting.
@@ -119,7 +106,7 @@ class JdbcSourceOutboxTest {
             assertTrue(idA < idB);
 
             assertEquals(Set.of("B"), keys(consume(1)));
-            assertTrue(lastStoredOffset().contains("\"incrementing\":" + idB), "offset moved past A's id");
+            assertTrue(storedOffsets().contains("\"incrementing\":" + idB), "offset moved past A's id");
 
             a.commit();                        // A is visible now, but below the offset
 
@@ -139,28 +126,22 @@ class JdbcSourceOutboxTest {
         var res = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()
                 .send(HttpRequest.newBuilder(URI.create(url)).build(), HttpResponse.BodyHandlers.ofInputStream());
         assertEquals(200, res.statusCode(), "plugin download");
-        unzipStrippingTopDir(res.body(), PLUGIN);
-    }
-
-    static void unzipStrippingTopDir(InputStream in, Path into) throws Exception {
-        try (var zip = new ZipInputStream(in)) {
+        try (var zip = new ZipInputStream(res.body())) {
             for (var e = zip.getNextEntry(); e != null; e = zip.getNextEntry()) {
-                var rel = e.getName().substring(e.getName().indexOf('/') + 1);
+                var rel = e.getName().substring(e.getName().indexOf('/') + 1); // strip the versioned top dir
                 if (e.isDirectory() || rel.isEmpty()) continue;
-                var target = into.resolve(rel);
-                Files.createDirectories(target.getParent());
-                Files.copy(zip, target);
+                Files.createDirectories(PLUGIN.resolve(rel).getParent());
+                Files.copy(zip, PLUGIN.resolve(rel));
             }
         }
     }
 
-    static String connectUrl() {
-        return "http://" + CONNECT.getHost() + ":" + CONNECT.getMappedPort(8083);
-    }
+    static final HttpClient http = HttpClient.newHttpClient();
+    static String connector;
 
     static void registerConnector() throws Exception {
-        var base = connectUrl() + "/connectors/jdbc-connector";
-        var http = HttpClient.newHttpClient();
+        connector = "http://" + CONNECT.getHost() + ":" + CONNECT.getMappedPort(8083) + "/connectors/jdbc-connector";
+        var base = connector;
         var put = HttpRequest.newBuilder(URI.create(base + "/config"))
                 .header("content-type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(Files.readString(Path.of("connector.json")))).build();
@@ -178,21 +159,17 @@ class JdbcSourceOutboxTest {
         System.out.println("  connect <- " + body);
     }
 
-    /// The connector's memory: the last value it committed to the connect_offsets topic.
-    static String lastStoredOffset() {
-        try (var c = new KafkaConsumer<String, String>(consumerProps())) {
-            var partitions = c.partitionsFor("connect_offsets").stream()
-                    .map(p -> new TopicPartition(p.topic(), p.partition())).toList();
-            c.assign(partitions);
-            c.seekToBeginning(partitions);
-            String last = "";
-            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-            while (System.nanoTime() < deadline) {
-                for (var r : c.poll(Duration.ofMillis(200))) if (r.value() != null) last = r.value();
-            }
-            System.out.println("  connect_offsets <- " + last);
-            return last;
-        }
+    /// The connector's memory, as committed to connect_offsets (flushed every second, see above).
+    static String storedOffsets() throws Exception {
+        var get = HttpRequest.newBuilder(URI.create(connector + "/offsets")).GET().build();
+        var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        String body;
+        do {
+            Thread.sleep(500);
+            body = http.send(get, HttpResponse.BodyHandlers.ofString()).body();
+        } while (!body.contains("incrementing") && System.nanoTime() < deadline);
+        System.out.println("  connect <- " + body);
+        return body;
     }
 
     // --- writing the way the application does --------------------------------------
@@ -230,7 +207,11 @@ class JdbcSourceOutboxTest {
         // row with a recycled lower id would be skipped. (Yes, that is the bug, biting the suite.)
         db.createStatement().execute("SET lock_timeout = '5s'; TRUNCATE orders, outbox");
         received.clear();
-        topic = new KafkaConsumer<>(consumerProps());
+        var props = new Properties();
+        props.put("bootstrap.servers", KAFKA.getBootstrapServers());
+        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        topic = new KafkaConsumer<>(props);
         var partitions = topic.partitionsFor(TOPIC).stream()
                 .map(p -> new TopicPartition(p.topic(), p.partition())).toList();
         topic.assign(partitions);
@@ -241,14 +222,6 @@ class JdbcSourceOutboxTest {
     @AfterEach
     void closeConsumer() {
         topic.close();
-    }
-
-    static Properties consumerProps() {
-        var props = new Properties();
-        props.put("bootstrap.servers", KAFKA.getBootstrapServers());
-        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        return props;
     }
 
     /// Everything published since the test started. Waits up to 15 s for at least

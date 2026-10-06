@@ -1,3 +1,5 @@
 target/
 kafka-connect-jdbc/
 .DS_Store
+.metals/
+.bloop/

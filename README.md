@@ -13,7 +13,7 @@ appends `WHERE "id" > ? ORDER BY "id"` to the query string.
 mvn test
 ```
 
-That is the whole demo. `JdbcSourceOutboxTest` downloads the plugin once (into
+That is the whole demo. `JdbcSourceOutboxTest` (infrastructure in `Env`) downloads the plugin once (into
 `kafka-connect-jdbc/`, gitignored), starts a real Postgres, Kafka and Kafka Connect
 (Testcontainers), registers `connector.json`, and prints what reached the topic:
 
@@ -32,5 +32,5 @@ same hole: `now()` is the transaction *start* time. The connector never writes
 The suite itself had to work around it: truncating with `RESTART IDENTITY` between tests
 recycled id 1 under an offset of 2, and the next test's order silently vanished.
 
-Siblings that get it right: [outbox-relay](../outbox-relay) (no cursor, marks rows) and
-[outbox-debezium](../outbox-debezium) (reads the WAL in commit order).
+Siblings that get it right: [outbox-relay](https://github.com/machado-vitor/outbox-relay) (no cursor, marks rows) and
+[outbox-debezium](https://github.com/machado-vitor/outbox-debezium) (reads the WAL in commit order).

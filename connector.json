@@ -1,33 +1,26 @@
 {
-  "name": "jdbc-connector",
-  "config": {
-    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
-
-    "connection.url": "jdbc:postgresql://postgres:5432/outbox",
-    "connection.user": "outbox",
-    "connection.password": "outbox",
-
-    "mode": "incrementing",
-    "incrementing.column.name": "id",
-    "validate.non.null": "false",
-    "query": "SELECT * FROM (SELECT id, event_id::text AS event_id, aggregate_id, event_type, payload::text AS payload FROM outbox WHERE published_at IS NULL) o",
-    "topic.prefix": "order.events",
-    "poll.interval.ms": "1000",
-
-    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
-    "value.converter": "org.apache.kafka.connect.storage.StringConverter",
-    "header.converter": "org.apache.kafka.connect.storage.StringConverter",
-
-    "transforms": "key,unwrapKey,headers,unwrapValue",
-    "transforms.key.type": "org.apache.kafka.connect.transforms.ValueToKey",
-    "transforms.key.fields": "aggregate_id",
-    "transforms.unwrapKey.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
-    "transforms.unwrapKey.field": "aggregate_id",
-    "transforms.headers.type": "org.apache.kafka.connect.transforms.HeaderFrom$Value",
-    "transforms.headers.fields": "event_id,event_type",
-    "transforms.headers.headers": "event_id,event_type",
-    "transforms.headers.operation": "move",
-    "transforms.unwrapValue.type": "org.apache.kafka.connect.transforms.ExtractField$Value",
-    "transforms.unwrapValue.field": "payload"
-  }
+  "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+  "connection.url": "jdbc:postgresql://postgres:5432/outbox",
+  "connection.user": "outbox",
+  "connection.password": "outbox",
+  "mode": "incrementing",
+  "incrementing.column.name": "id",
+  "validate.non.null": "false",
+  "query": "SELECT * FROM (SELECT id, event_id::text AS event_id, aggregate_id, event_type, payload::text AS payload FROM outbox WHERE published_at IS NULL) o",
+  "topic.prefix": "order.events",
+  "poll.interval.ms": "1000",
+  "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "value.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "header.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "transforms": "key,unwrapKey,headers,unwrapValue",
+  "transforms.key.type": "org.apache.kafka.connect.transforms.ValueToKey",
+  "transforms.key.fields": "aggregate_id",
+  "transforms.unwrapKey.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
+  "transforms.unwrapKey.field": "aggregate_id",
+  "transforms.headers.type": "org.apache.kafka.connect.transforms.HeaderFrom$Value",
+  "transforms.headers.fields": "event_id,event_type",
+  "transforms.headers.headers": "event_id,event_type",
+  "transforms.headers.operation": "move",
+  "transforms.unwrapValue.type": "org.apache.kafka.connect.transforms.ExtractField$Value",
+  "transforms.unwrapValue.field": "payload"
 }

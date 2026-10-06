@@ -3,34 +3,34 @@
 Transactional outbox drained by the Confluent JDBC source connector — and why not to.
 `orders` row and `outbox` row are written in one statement; the connector polls the table
 every second with `mode=incrementing` on `id`, keeping the highest id it has seen as its
-offset. SMTs shape the record: `ValueToKey` + `ExtractField` make `aggregate_id` the key,
-`HeaderFrom` moves `event_id` / `event_type` to headers, `ExtractField` leaves `payload`
-as the value. `uuid` and `jsonb` are cast to `text` because the connector does not map
-them; `SELECT * FROM (...) o` is needed because the connector appends
-`WHERE "id" > ? ORDER BY "id"` to the query string.
+offset. SMTs shape the record (`connector.json`): `ValueToKey` + `ExtractField` make
+`aggregate_id` the key, `HeaderFrom` moves `event_id` / `event_type` to headers,
+`ExtractField` leaves `payload` as the value. `uuid` and `jsonb` are cast to `text` because
+the connector does not map them; `SELECT * FROM (...) o` is needed because the connector
+appends `WHERE "id" > ? ORDER BY "id"` to the query string.
 
 ```sh
-make up            # postgres + kafka + connect, schema, topic
-make connector     # downloads the Confluent plugin (once), restarts connect, registers connector.json
-make connector-status
-make order N=5
-make consume
-make race          # <-- the bug
+mvn test
 ```
 
+That is the whole demo. `JdbcSourceOutboxTest` downloads the plugin once (into
+`kafka-connect-jdbc/`, gitignored), starts a real Postgres, Kafka and Kafka Connect
+(Testcontainers), registers `connector.json`, and prints what reached the topic:
+
+| test | shows |
+|---|---|
+| `publishesTheOrderEventWithKeyHeadersAndPayload` | the easy case works: key = `aggregate_id`, headers `event_id` / `event_type`, value = payload. `published_at` stays NULL, the connector never writes |
+| `aRowThatBecomesVisibleLateIsLostForever` | tx A takes id *n* but commits after tx B took *n+1*. B is published and `connect_offsets` reads `{"incrementing": n+1}`. A commits; five polls later it is still not on the topic, and nothing will ever ask for it again |
+
 ## The bug
-
-`make race`: transaction A inserts an outbox row and takes `id = n`, then sleeps.
-Transaction B inserts, takes `n+1`, commits. A commits 4 s later.
-
-Only `B` reaches the topic. The connector saw `n+1`, stored it as its offset
-(`connect_offsets` topic: `{"incrementing": n+1}`), and never asks for `id <= n+1` again.
-Row `n` sits in the table with `published_at = NULL` forever; nothing will ever publish it.
 
 `bigserial` hands out ids at `INSERT` time, not at `COMMIT`, so a lower id can become
 visible after a higher one. A cursor on `id` assumes otherwise. `mode=timestamp` has the
 same hole: `now()` is the transaction *start* time. The connector never writes
-`published_at`, so it cannot use the one question that works (`WHERE published_at IS NULL`).
+`published_at`, so it cannot ask the one question that works (`WHERE published_at IS NULL`).
+
+The suite itself had to work around it: truncating with `RESTART IDENTITY` between tests
+recycled id 1 under an offset of 2, and the next test's order silently vanished.
 
 Siblings that get it right: [outbox-relay](../outbox-relay) (no cursor, marks rows) and
 [outbox-debezium](../outbox-debezium) (reads the WAL in commit order).

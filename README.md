@@ -32,5 +32,6 @@ same hole: `now()` is the transaction *start* time. The connector never writes
 The suite itself had to work around it: truncating with `RESTART IDENTITY` between tests
 recycled id 1 under an offset of 2, and the next test's order silently vanished.
 
+Compared side by side in [outbox-compared](https://github.com/machado-vitor/outbox-compared).
 Siblings that get it right: [outbox-relay](https://github.com/machado-vitor/outbox-relay) (no cursor, marks rows) and
 [outbox-debezium](https://github.com/machado-vitor/outbox-debezium) (reads the WAL in commit order).

@@ -65,9 +65,10 @@ class JdbcSourceOutboxTest {
                     "OFFSET_FLUSH_INTERVAL_MS", "1000")) // default 60 s; the test wants to read the stored offset
             .withFileSystemBind(PLUGIN.toAbsolutePath().toString(), "/kafka/connect/kafka-connect-jdbc")
             .withExposedPorts(8083)
-            .waitingFor(Wait.forHttp("/connectors").forPort(8083).withStartupTimeout(Duration.ofMinutes(2)));
+            .waitingFor(Wait.forHttp("/connectors").forPort(8083));
 
     static Connection db;
+    static final HttpClient http = HttpClient.newHttpClient();
 
     @BeforeAll
     static void start() throws Exception {
@@ -123,8 +124,7 @@ class JdbcSourceOutboxTest {
         var url = "https://hub-downloads.confluent.io/api/plugins/confluentinc/kafka-connect-jdbc/versions/"
                 + PLUGIN_VERSION + "/confluentinc-kafka-connect-jdbc-" + PLUGIN_VERSION + ".zip";
         System.out.println("  downloading " + url);
-        var res = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build()
-                .send(HttpRequest.newBuilder(URI.create(url)).build(), HttpResponse.BodyHandlers.ofInputStream());
+        var res = http.send(HttpRequest.newBuilder(URI.create(url)).build(), HttpResponse.BodyHandlers.ofInputStream());
         assertEquals(200, res.statusCode(), "plugin download");
         try (var zip = new ZipInputStream(res.body())) {
             for (var e = zip.getNextEntry(); e != null; e = zip.getNextEntry()) {
@@ -136,38 +136,33 @@ class JdbcSourceOutboxTest {
         }
     }
 
-    static final HttpClient http = HttpClient.newHttpClient();
     static String connector;
 
     static void registerConnector() throws Exception {
         connector = "http://" + CONNECT.getHost() + ":" + CONNECT.getMappedPort(8083) + "/connectors/jdbc-connector";
-        var base = connector;
-        var put = HttpRequest.newBuilder(URI.create(base + "/config"))
+        var put = HttpRequest.newBuilder(URI.create(connector + "/config"))
                 .header("content-type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(Files.readString(Path.of("connector.json")))).build();
         var res = http.send(put, HttpResponse.BodyHandlers.ofString());
         assertTrue(res.statusCode() / 100 == 2, "register: " + res.body());
-
-        var status = HttpRequest.newBuilder(URI.create(base + "/status")).GET().build();
-        var deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-        String body;
-        do {
-            Thread.sleep(500);
-            body = http.send(status, HttpResponse.BodyHandlers.ofString()).body();
-        } while (!body.contains("\"tasks\":[{\"id\":0,\"state\":\"RUNNING\"") && System.nanoTime() < deadline);
-        assertTrue(body.contains("\"state\":\"RUNNING\""), "task never started: " + body);
-        System.out.println("  connect <- " + body);
+        assertTrue(awaitBody(connector + "/status", "\"tasks\":[{\"id\":0,\"state\":\"RUNNING\"").contains("RUNNING"),
+                "task never started");
     }
 
     /// The connector's memory, as committed to connect_offsets (flushed every second, see above).
     static String storedOffsets() throws Exception {
-        var get = HttpRequest.newBuilder(URI.create(connector + "/offsets")).GET().build();
-        var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        return awaitBody(connector + "/offsets", "incrementing");
+    }
+
+    /// GET until the body contains `until` (up to 30 s); returns the last body either way.
+    static String awaitBody(String url, String until) throws Exception {
+        var get = HttpRequest.newBuilder(URI.create(url)).GET().build();
+        var deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         String body;
         do {
             Thread.sleep(500);
             body = http.send(get, HttpResponse.BodyHandlers.ofString()).body();
-        } while (!body.contains("incrementing") && System.nanoTime() < deadline);
+        } while (!body.contains(until) && System.nanoTime() < deadline);
         System.out.println("  connect <- " + body);
         return body;
     }

@@ -45,11 +45,11 @@ class Env {
             .withUsername("outbox").withPassword("outbox").withDatabaseName("outbox")
             .withCopyFileToContainer(MountableFile.forHostPath("schema.sql"), "/docker-entrypoint-initdb.d/schema.sql");
 
-    static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.3.1")
+    static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.4.0")
             .withNetwork(NET).withNetworkAliases("kafka").withListener("kafka:19092");
 
     // The Debezium image is just a convenient Kafka Connect; the JDBC plugin is mounted in.
-    static final GenericContainer<?> CONNECT = new GenericContainer<>("quay.io/debezium/connect:3.3.2.Final")
+    static final GenericContainer<?> CONNECT = new GenericContainer<>("quay.io/debezium/connect:3.7.0.Final")
             .withNetwork(NET).dependsOn(POSTGRES, KAFKA)
             .withEnv(Map.of(
                     "BOOTSTRAP_SERVERS", "kafka:19092",
